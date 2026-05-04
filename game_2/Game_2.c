@@ -47,15 +47,14 @@ void FSM_Update(Archie_t *cat, CatEvent event) {
     switch (cat->state) {
 
         case STATE_IDLE:
-            if (event == EVENT_STAT_EMPTY)  { cat->state = STATE_UNWELL;   }
-            if (event == EVENT_STAT_FULL)   { cat->state = STATE_HAPPY;    }
-            if (event == EVENT_BTN_FEED)    { cat->state = STATE_EATING;   }
-            if (event == EVENT_BTN_SLEEP)   { cat->state = STATE_SLEEPING; }
-            if (event == EVENT_JOYSTICK)    { cat->state = STATE_PLAYING;  }
+            if (event == EVENT_STAT_EMPTY)       { cat->state = STATE_UNWELL;   }
+            else if (event == EVENT_BTN_FEED)    { cat->state = STATE_EATING;   }
+            else if (event == EVENT_BTN_SLEEP)   { cat->state = STATE_SLEEPING; }
+            else if (event == EVENT_JOYSTICK)    { cat->state = STATE_PLAYING;  }
+            else if (event == EVENT_STAT_FULL)   { cat->state = STATE_HAPPY;    }
             break;
         case STATE_EATING:
-            cat->hunger = MIN(cat->hunger + 1, 100);
-            if (event == EVENT_ACTION_DONE) { cat->state = STATE_IDLE; }
+            if (HAL_GetTick() - cat->state_timer > 3000) { cat->state = STATE_IDLE; }
             break;
         case STATE_SLEEPING:
             cat->energy = MIN(cat->energy + 1, 100);
@@ -66,19 +65,26 @@ void FSM_Update(Archie_t *cat, CatEvent event) {
             if (event != EVENT_JOYSTICK) { cat->state = STATE_IDLE; }
             break;
         case STATE_UNWELL:
-            if (event == EVENT_BTN_FEED  ||
-                event == EVENT_BTN_SLEEP ||
-                event == EVENT_JOYSTICK) {
-                cat->state = STATE_IDLE;
-            }
+            if (event == EVENT_BTN_FEED)        { cat->state = STATE_EATING;   }
+            else if (event == EVENT_BTN_SLEEP)  { cat->state = STATE_SLEEPING; }
+            else if (event == EVENT_JOYSTICK)   { cat->state = STATE_PLAYING;  }
             break;
         case STATE_HAPPY:
-            if (HAL_GetTick() - cat->state_timer > 2000) {
+            // only leave happy if stats drop below threshold or unwell
+            if (cat->hunger < 90 || cat->happiness < 90 || cat->energy < 90)
                 cat->state = STATE_IDLE;
-            }
-            break;
+            if (event == EVENT_STAT_EMPTY)   { cat->state = STATE_UNWELL;   }
+            if (event == EVENT_BTN_FEED)     { cat->state = STATE_EATING;   }
+            if (event == EVENT_BTN_SLEEP)    { cat->state = STATE_SLEEPING; }
+            if (event == EVENT_JOYSTICK)     { cat->state = STATE_PLAYING;  }
+            break; 
     }
-    cat->state_timer = HAL_GetTick();
+    // only reset timer when state actually changes
+    static CatState prev_state = STATE_IDLE;
+    if (cat->state != prev_state) {
+        cat->state_timer = HAL_GetTick();
+        prev_state = cat->state;
+    }
 }
 
 // stat bars!!
@@ -105,18 +111,22 @@ MenuState Game2_Run(void) {
     Archie_t archie;
     FSM_Init(&archie);
     uint32_t last_decay = HAL_GetTick();
-    uint8_t carrying_fish = 0;
-    uint8_t carrying_bones = 0;
-    uint8_t fish_eaten = 0;
-    uint32_t fish_respawn_timer = 0;
 
-    // mapping archie, cursor, fish
+    // food item variables
+    FoodItem_t items[MAX_ITEMS] = {0};
+    items[0].x = 20; 
+    items[0].y = 150;
+    items[0].type = ITEM_FISH; 
+    items[0].active = 1;
+    int8_t carried_index = -1;
+    uint32_t fish_respawn_timer = HAL_GetTick();
+    uint8_t fish_respawn_pending = 0;
+
+    // mapping archie, cursor, bin
     float cursor_x = 120.0f;  // start cursor in centre of screen
     float cursor_y = 120.0f;
     float prev_cursor_x = 120.0f;
     float prev_cursor_y = 120.0f;
-    float fish_x = 20.0f;
-    float fish_y = 150.0f;
     #define CURSOR_SPEED 5.0f
     #define ARCHIE_X 70
     #define ARCHIE_Y 100
@@ -124,6 +134,10 @@ MenuState Game2_Run(void) {
     #define ARCHIE_H 60
     #define FISH_W 20
     #define FISH_H 15
+    #define BIN_X 180
+    #define BIN_Y 150
+    #define BIN_W 25
+    #define BIN_H 25
 
     // Play a brief startup sound
     buzzer_tone(&buzzer_cfg, 1200, 30);  // 1.2kHz at 30% volume
@@ -160,54 +174,55 @@ MenuState Game2_Run(void) {
         prev_cursor_y = cursor_y;
 
         // Check if cursor is hovering over Archie
-        uint8_t hovering = (cursor_x >= ARCHIE_X && cursor_x <= ARCHIE_X + ARCHIE_W &&
-                            cursor_y >= ARCHIE_Y && cursor_y <= ARCHIE_Y + ARCHIE_H);
-        if (hovering && cursor_moved) event = EVENT_JOYSTICK;
+        uint8_t hovering = (cursor_x >= ARCHIE_X && cursor_x <= ARCHIE_X + ARCHIE_W && cursor_y >= ARCHIE_Y && cursor_y <= ARCHIE_Y + ARCHIE_H);
 
         // Check if cursor is over menu button
-        uint8_t over_menu = (cursor_x >= 3 && cursor_x <= 54 &&
-                             cursor_y >= 8 && cursor_y <= 25);
+        uint8_t over_menu = (cursor_x >= 3 && cursor_x <= 54 && cursor_y >= 8 && cursor_y <= 25);
         if (current_input.btn3_pressed && over_menu) {
             exit_state = MENU_STATE_HOME;
             break;
         }
 
-        // Fish grab and drop
-        uint8_t over_fish = (!carrying_fish && !fish_eaten && cursor_x >= fish_x && cursor_x <= fish_x + FISH_W && cursor_y >= fish_y && cursor_y <= fish_y + FISH_H);
-        uint8_t over_bones = (!carrying_bones && fish_eaten == 2 && cursor_x >= fish_x && cursor_x <= fish_x + FISH_W && cursor_y >= fish_y && cursor_y <= fish_y + FISH_H);
-        uint8_t over_archie = (cursor_x >= ARCHIE_X && cursor_x <= ARCHIE_X + ARCHIE_W && cursor_y >= ARCHIE_Y && cursor_y <= ARCHIE_Y + ARCHIE_H);
-
-        if (current_input.btn3_pressed) {
-            if (over_fish) {
-                carrying_fish = 1; // pick up the fish
-            } else if (over_bones) {
-                carrying_bones = 1;
-            } else if (carrying_fish && over_archie) {
-                carrying_fish = 0;
-                fish_eaten = 1;
-                fish_respawn_timer = HAL_GetTick();
-                archie.hunger = MIN(archie.hunger + 30, 100);
-                fish_x = cursor_x;
-                fish_y = cursor_y;
+        // Respawn fish only if no inactive slots are waiting to become bones
+        if (fish_respawn_pending && HAL_GetTick() - fish_respawn_timer > 3000) {
+            uint8_t bones_pending = 0;
+            for (int i = 0; i < MAX_ITEMS; i++) {
+                if (!items[i].active && items[i].type == ITEM_BONES) {
+                    bones_pending = 1;
+                    break;
+                }
+            }
+            if (!bones_pending) {
+                for (int i = 0; i < MAX_ITEMS; i++) {
+                    if (!items[i].active && items[i].type == ITEM_NONE) {
+                        items[i].x = 20; items[i].y = 150;
+                        items[i].type = ITEM_FISH;
+                        items[i].active = 1;
+                        fish_respawn_pending = 0;
+                        break;
+                    }
+                }
             }
         }
 
-        if (carrying_fish)  { fish_x = cursor_x; fish_y = cursor_y; }
-        if (carrying_bones) { fish_x = cursor_x; fish_y = cursor_y; }
+		// Bones appear after 3 seconds at drop point
+		for (int i = 0; i < MAX_ITEMS; i++) {
+			if (items[i].type == ITEM_BONES && !items[i].active) {
+				if (HAL_GetTick() - items[i].spawn_time > 3000) {
+					items[i].active = 1;
+				}
+			}
+		}
 
-        // Fish follows cursor when carried
-        if (carrying_fish) {
-            fish_x = cursor_x;
-            fish_y = cursor_y;
-        }
-        // Respawn bones after 3 seconds
-        if (fish_eaten == 1 && HAL_GetTick() - fish_respawn_timer > 3000) {
-            fish_eaten = 2;  // 2 = bones phase
-        }
+		// Carried item follows cursor
+		if (carried_index >= 0) {
+			items[carried_index].x = cursor_x;
+			items[carried_index].y = cursor_y;
+		}
 
-        // if (current_input.btn2_pressed) event = EVENT_BTN_FEED; // i need to add another button for this feed function on the hardware, but for now just reusing btn2 for feeding and sleeping to demonstrate
-        if (current_input.btn2_pressed) event = EVENT_BTN_SLEEP;
-        // if (current_input.joystick_moved) event = EVENT_JOYSTICK;
+        // Check if cursor is over Archie or bin for interaction
+		uint8_t over_archie = (cursor_x >= ARCHIE_X && cursor_x <= ARCHIE_X + ARCHIE_W && cursor_y >= ARCHIE_Y && cursor_y <= ARCHIE_Y + ARCHIE_H);
+		uint8_t over_bin = (cursor_x >= BIN_X && cursor_x <= BIN_X + BIN_W && cursor_y >= BIN_Y && cursor_y <= BIN_Y + BIN_H);
 
         // stat bars decay every 3 seconds
         if (HAL_GetTick() - last_decay > 3000) {
@@ -215,12 +230,58 @@ MenuState Game2_Run(void) {
             archie.happiness = MAX(archie.happiness - 1, 0);
             archie.energy    = MAX(archie.energy    - 1, 0);
             last_decay = HAL_GetTick();
-
-            if (archie.hunger == 0 || archie.happiness == 0 || archie.energy == 0)
-                event = EVENT_STAT_EMPTY;
-            if (archie.hunger == 100 && archie.happiness == 100 && archie.energy == 100)
-                event = EVENT_STAT_FULL;
         }
+
+        // Check stat thresholds every frame
+        if (archie.hunger <= 20 || archie.happiness <= 20 || archie.energy <= 20)
+            event = EVENT_STAT_EMPTY;
+        else if (archie.hunger >= 90 && archie.happiness >= 90 && archie.energy >= 90)
+            event = EVENT_STAT_FULL;
+
+        // overwrite threshold events so interactions always take priority
+        if (hovering && cursor_moved)    event = EVENT_JOYSTICK;
+        if (current_input.btn2_pressed)  event = EVENT_BTN_SLEEP;
+
+        // Handle button press for picking up / dropping items
+		if (current_input.btn3_pressed) {
+			if (carried_index == -1) {
+				// Try to pick up
+				for (int i = 0; i < MAX_ITEMS; i++) {
+					if (items[i].active && cursor_x >= items[i].x && cursor_x <= items[i].x + FISH_W && cursor_y >= items[i].y && cursor_y <= items[i].y + FISH_H) {
+						carried_index = i;
+						// If picking up fish from home position, start respawn
+						if (items[i].type == ITEM_FISH && (int)items[i].x == 20 && (int)items[i].y == 150) {
+							fish_respawn_pending = 1;
+							fish_respawn_timer = HAL_GetTick();
+					    }
+				    break;
+				    }
+				}
+			} else {
+				// Drop carried item
+				if (over_archie && items[carried_index].type == ITEM_FISH) {
+					// Fed to Archie
+					float drop_x = cursor_x;
+					float drop_y = cursor_y;
+					items[carried_index].active = 0;
+					items[carried_index].type = ITEM_BONES;
+					items[carried_index].x = drop_x;
+					items[carried_index].y = drop_y;
+					items[carried_index].spawn_time = HAL_GetTick();
+					archie.hunger = MIN(archie.hunger + 30, 100);
+                    event = EVENT_BTN_FEED;
+					carried_index = -1;
+				} else if (over_bin) {
+					// Binned permanently
+					items[carried_index].active = 0;
+					items[carried_index].type = ITEM_NONE;
+					carried_index = -1;
+	    		} else {
+					// Drop anywhere
+					carried_index = -1;
+				}
+			}
+		}
 
         FSM_Update(&archie, event);
 
@@ -255,12 +316,16 @@ MenuState Game2_Run(void) {
         LCD_printString("Energy:", 10, 70, 1, 1);
         Draw_Stat_Bar(70, 70, archie.energy,    4);  // colour 4 = blue
 
-        // Draw fish or bones
-        if (fish_eaten == 0 || carrying_fish) {
-            LCD_Draw_Rect((uint16_t)fish_x, (uint16_t)fish_y, FISH_W, FISH_H, 2, 1);  // red = fish
-        }
-        if (fish_eaten == 2) {
-            LCD_Draw_Rect((uint16_t)fish_x, (uint16_t)fish_y, FISH_W, FISH_H, 4, 1);  // blue = bones
+        // Draw bin (always visible)
+        LCD_Draw_Rect(BIN_X, BIN_Y, BIN_W, BIN_H, 5, 0);  // orange outline
+        LCD_printString("BIN", BIN_X + 3, BIN_Y + 8, 5, 1);
+
+        // Draw food items
+        for (int i = 0; i < MAX_ITEMS; i++) {
+            if (items[i].active) {
+                uint8_t colour = (items[i].type == ITEM_FISH) ? 2 : 4;  // red=fish, blue=bones
+                LCD_Draw_Rect((uint16_t)items[i].x, (uint16_t)items[i].y, FISH_W, FISH_H, colour, 1);
+            }
         }
 
         LCD_Refresh(&cfg0);

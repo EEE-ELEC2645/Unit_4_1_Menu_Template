@@ -32,6 +32,18 @@ typedef struct {
     uint32_t state_timer; // HAL_GetTick() timestamp of last state entry
 } Archie_t;
 
+typedef struct {
+    float x, y;
+    uint8_t type;         // ITEM_NONE, ITEM_FISH, ITEM_BONES
+    uint8_t active;       // 1 = on screen
+    uint32_t spawn_time;  // for delayed appearance (bones after eating)
+} FoodItem_t;
+
+#define ITEM_NONE  0
+#define ITEM_FISH  1
+#define ITEM_BONES 2
+#define MAX_ITEMS  3
+
 void FSM_Init(Archie_t *cat);
 void FSM_Update(Archie_t *cat, CatEvent event);
  
