@@ -133,6 +133,9 @@ MenuState Game2_Run(void) {
     FSM_Init(&archie);
     uint32_t last_decay = HAL_GetTick();
 
+    GamePhase phase = PHASE_INSTRUCTIONS;
+    uint8_t game_started = 0;
+
     // food item variables
     FoodItem_t items[MAX_ITEMS] = {0};
     items[0].x = 20; 
@@ -191,13 +194,12 @@ MenuState Game2_Run(void) {
         if (cursor_y > 238) cursor_y = 238;
 
         // Check if cursor is over Archie or bin for interaction
-		uint8_t over_archie = (cursor_x >= ARCHIE_X && cursor_x <= ARCHIE_X + ARCHIE_W && cursor_y >= ARCHIE_Y && cursor_y <= ARCHIE_Y + ARCHIE_H);
-		uint8_t over_bin = (cursor_x >= BIN_X && cursor_x <= BIN_X + BIN_W && cursor_y >= BIN_Y && cursor_y <= BIN_Y + BIN_H);
+        uint8_t over_archie = (cursor_x >= ARCHIE_X && cursor_x <= ARCHIE_X + ARCHIE_W && cursor_y >= ARCHIE_Y && cursor_y <= ARCHIE_Y + ARCHIE_H);
+        uint8_t over_bin = (cursor_x >= BIN_X && cursor_x <= BIN_X + BIN_W && cursor_y >= BIN_Y && cursor_y <= BIN_Y + BIN_H);
 
         // Check if cursor actually moved this frame
         uint8_t cursor_moved = ((int16_t)cursor_x != (int16_t)prev_cursor_x || (int16_t)cursor_y != (int16_t)prev_cursor_y);
-        // Update previous position
-        prev_cursor_x = cursor_x;
+        prev_cursor_x = cursor_x; // Update previous cursor position
         prev_cursor_y = cursor_y;
 
         // Check if cursor is over menu button
@@ -207,107 +209,120 @@ MenuState Game2_Run(void) {
             break;
         }
 
-        // Respawn fish only if no inactive slots are waiting to become bones
-        if (fish_respawn_pending && HAL_GetTick() - fish_respawn_timer > 3000) {
-            uint8_t bones_pending = 0;
-            for (int i = 0; i < MAX_ITEMS; i++) {
-                if (!items[i].active && items[i].type == ITEM_BONES) {
-                    bones_pending = 1;
-                    break;
-                }
-            }
-            if (!bones_pending) {
+        // Check if cursor over info button
+        uint8_t over_info = (cursor_x >= 186 && cursor_x <= 237 && cursor_y >= 8 && cursor_y <= 25);
+        if (current_input.btn3_pressed && over_info) {
+            phase = PHASE_INSTRUCTIONS;
+        }
+
+
+        //only run game logic if we're in the playing phase
+        if (phase == PHASE_PLAYING) {
+            
+            // Respawn fish only if no inactive slots are waiting to become bones
+            if (fish_respawn_pending && HAL_GetTick() - fish_respawn_timer > 3000) {
+                uint8_t bones_pending = 0;
                 for (int i = 0; i < MAX_ITEMS; i++) {
-                    if (!items[i].active && items[i].type == ITEM_NONE) {
-                        items[i].x = 20; items[i].y = 150;
-                        items[i].type = ITEM_FISH;
-                        items[i].active = 1;
-                        fish_respawn_pending = 0;
+                    if (!items[i].active && items[i].type == ITEM_BONES) {
+                        bones_pending = 1;
                         break;
                     }
                 }
+                if (!bones_pending) {
+                    for (int i = 0; i < MAX_ITEMS; i++) {
+                        if (!items[i].active && items[i].type == ITEM_NONE) {
+                            items[i].x = 20; items[i].y = 150;
+                            items[i].type = ITEM_FISH;
+                            items[i].active = 1;
+                            fish_respawn_pending = 0;
+                            break;
+                        }
+                    }
+                }
             }
+
+            // Bones appear after 3 seconds at drop point
+            for (int i = 0; i < MAX_ITEMS; i++) {
+                if (items[i].type == ITEM_BONES && !items[i].active) {
+                    if (HAL_GetTick() - items[i].spawn_time > 3000) {
+                        items[i].active = 1;
+                    }
+                }
+            }
+
+            // Carried item follows cursor
+            if (carried_index >= 0) {
+                items[carried_index].x = cursor_x;
+                items[carried_index].y = cursor_y;
+            }
+
+            // stat bars decay every 3 seconds
+            if (HAL_GetTick() - last_decay > 3000) {
+                archie.hunger    = MAX(archie.hunger    - 5, 0);
+                archie.happiness = MAX(archie.happiness - 5, 0);
+                archie.energy    = MAX(archie.energy    - 5, 0);
+                last_decay = HAL_GetTick();
+            }
+
+            // Check stat thresholds every frame
+            if (archie.hunger == 0 && archie.happiness == 0 && archie.energy == 0)
+                event = EVENT_DEAD;
+            else if (archie.hunger <= 20 || archie.happiness <= 20 || archie.energy <= 20)
+                event = EVENT_STAT_EMPTY;
+            else if (archie.hunger >= 90 && archie.happiness >= 90 && archie.energy >= 90)
+                event = EVENT_STAT_FULL;
+
+            // overwrite threshold events so interactions always take priority
+            if (over_archie && cursor_moved)    event = EVENT_JOYSTICK;
+            if (current_input.btn2_pressed)  event = EVENT_BTN_SLEEP;
+
+            // Handle button press for picking up / dropping items
+            if (current_input.btn3_pressed) {
+                if (carried_index == -1) {
+                    // Try to pick up
+                    for (int i = 0; i < MAX_ITEMS; i++) {
+                        if (items[i].active && cursor_x >= items[i].x && cursor_x <= items[i].x + FISH_W && cursor_y >= items[i].y && cursor_y <= items[i].y + FISH_H) {
+                            carried_index = i;
+                            // If picking up fish from home position, start respawn
+                            if (items[i].type == ITEM_FISH && (int)items[i].x == 20 && (int)items[i].y == 150) {
+                                fish_respawn_pending = 1;
+                                fish_respawn_timer = HAL_GetTick();
+                            }
+                        break;
+                        }
+                    }
+                } else {
+                    // Drop carried item
+                    if (over_archie && items[carried_index].type == ITEM_FISH) {
+                        // Fed to Archie
+                        float drop_x = cursor_x;
+                        float drop_y = cursor_y;
+                        items[carried_index].active = 0;
+                        items[carried_index].type = ITEM_BONES;
+                        items[carried_index].x = drop_x;
+                        items[carried_index].y = drop_y;
+                        items[carried_index].spawn_time = HAL_GetTick();
+                        archie.hunger = MIN(archie.hunger + 30, 100);
+                        event = EVENT_BTN_FEED;
+                        carried_index = -1;
+                    } else if (over_bin) {
+                        // Binned permanently
+                        items[carried_index].active = 0;
+                        items[carried_index].type = ITEM_NONE;
+                        carried_index = -1;
+                    } else {
+                        // Drop anywhere
+                        carried_index = -1;
+                    }
+                }
+            }
+
+            FSM_Update(&archie, event);
         }
 
-		// Bones appear after 3 seconds at drop point
-		for (int i = 0; i < MAX_ITEMS; i++) {
-			if (items[i].type == ITEM_BONES && !items[i].active) {
-				if (HAL_GetTick() - items[i].spawn_time > 3000) {
-					items[i].active = 1;
-				}
-			}
-		}
-
-		// Carried item follows cursor
-		if (carried_index >= 0) {
-			items[carried_index].x = cursor_x;
-			items[carried_index].y = cursor_y;
-		}
-
-        // stat bars decay every 3 seconds
-        if (HAL_GetTick() - last_decay > 3000) {
-            archie.hunger    = MAX(archie.hunger    - 5, 0);
-            archie.happiness = MAX(archie.happiness - 5, 0);
-            archie.energy    = MAX(archie.energy    - 5, 0);
-            last_decay = HAL_GetTick();
-        }
-
-        // Check stat thresholds every frame
-        if (archie.hunger == 0 && archie.happiness == 0 && archie.energy == 0)
-            event = EVENT_DEAD;
-        else if (archie.hunger <= 20 || archie.happiness <= 20 || archie.energy <= 20)
-            event = EVENT_STAT_EMPTY;
-        else if (archie.hunger >= 90 && archie.happiness >= 90 && archie.energy >= 90)
-            event = EVENT_STAT_FULL;
-
-        // overwrite threshold events so interactions always take priority
-        if (over_archie && cursor_moved)    event = EVENT_JOYSTICK;
-        if (current_input.btn2_pressed)  event = EVENT_BTN_SLEEP;
-
-        // Handle button press for picking up / dropping items
-		if (current_input.btn3_pressed) {
-			if (carried_index == -1) {
-				// Try to pick up
-				for (int i = 0; i < MAX_ITEMS; i++) {
-					if (items[i].active && cursor_x >= items[i].x && cursor_x <= items[i].x + FISH_W && cursor_y >= items[i].y && cursor_y <= items[i].y + FISH_H) {
-						carried_index = i;
-						// If picking up fish from home position, start respawn
-						if (items[i].type == ITEM_FISH && (int)items[i].x == 20 && (int)items[i].y == 150) {
-							fish_respawn_pending = 1;
-							fish_respawn_timer = HAL_GetTick();
-					    }
-				    break;
-				    }
-				}
-			} else {
-				// Drop carried item
-				if (over_archie && items[carried_index].type == ITEM_FISH) {
-					// Fed to Archie
-					float drop_x = cursor_x;
-					float drop_y = cursor_y;
-					items[carried_index].active = 0;
-					items[carried_index].type = ITEM_BONES;
-					items[carried_index].x = drop_x;
-					items[carried_index].y = drop_y;
-					items[carried_index].spawn_time = HAL_GetTick();
-					archie.hunger = MIN(archie.hunger + 30, 100);
-                    event = EVENT_BTN_FEED;
-					carried_index = -1;
-				} else if (over_bin) {
-					// Binned permanently
-					items[carried_index].active = 0;
-					items[carried_index].type = ITEM_NONE;
-					carried_index = -1;
-	    		} else {
-					// Drop anywhere
-					carried_index = -1;
-				}
-			}
-		}
-
-        FSM_Update(&archie, event);
 
         // RENDER: Draw to LCD
+
         LCD_Fill_Buffer(0);
         LCD_Draw_Rect((uint16_t)cursor_x - 2, (uint16_t)cursor_y - 2, 5, 5, 1, 1); // Draw cursor (small cross)
         
@@ -317,6 +332,10 @@ MenuState Game2_Run(void) {
         // Menu exit button
         LCD_Draw_Rect(3, 8, 51, 17, 2, 1);  // red filled rect
         LCD_printString("MENU", 5, 10, 1, 2);
+        
+        // Info button
+        LCD_Draw_Rect(186, 8, 51, 17, 4, 1);  // blue filled
+        LCD_printString("INFO", 190, 10, 1, 2);
 
         LCD_Draw_Rect(ARCHIE_X, ARCHIE_Y, ARCHIE_W, ARCHIE_H, 1, 0); // for testing archie position, replace with sprite later
 
@@ -340,6 +359,62 @@ MenuState Game2_Run(void) {
            }
         } else {
             blink_visible = 1;  // always visible in non-dying states   
+        }
+
+        // Instructions screen
+        if (phase == PHASE_INSTRUCTIONS) {
+            LCD_Fill_Buffer(0);
+
+            // Menu button
+            LCD_Draw_Rect(3, 8, 51, 17, 2, 1);
+            LCD_printString("MENU", 5, 10, 1, 2);
+
+            // Title
+            LCD_printString("INSTRUCTIONS", 20, 35, 1, 2);
+
+            // Instructions text
+            LCD_printString("Take care of Archie", 10, 65, 1, 1);
+            LCD_printString("the cat!", 10, 78, 1, 1);
+            LCD_printString("Feed him fish, but make", 10, 95, 1, 1);
+            LCD_printString("sure to tidy the bones", 10, 108, 1, 1);
+            LCD_printString("he spits out!", 10, 121, 1, 1);
+            LCD_printString("Pet him with the joystick", 10, 138, 1, 1);
+            LCD_printString("Press btn2 to sleep", 10, 155, 1, 1);
+            LCD_printString("Beware! If Archie's stats", 10, 172, 1, 1);
+            LCD_printString("get too low, there will", 10, 185, 1, 1);
+            LCD_printString("be consequences...", 10, 198, 1, 1);
+
+            // Play / Resume button
+            LCD_Draw_Rect(70, 218, 100, 23, 3, 1);
+            if (game_started == 0) {
+                LCD_printString("Play!", 103, 222, 0, 2);
+            } else {
+                LCD_printString("Resume", 90, 222, 0, 2);
+            }
+
+            // Cursor
+            LCD_Draw_Rect((uint16_t)cursor_x - 2, (uint16_t)cursor_y - 2, 5, 5, 1, 1);
+
+            // Menu button check
+            uint8_t over_menu_inst = (cursor_x >= 3 && cursor_x <= 54 &&
+                                    cursor_y >= 8 && cursor_y <= 25);
+            if (current_input.btn3_pressed && over_menu_inst) {
+                exit_state = MENU_STATE_HOME;
+                break;
+            }
+
+            // Play/Resume button check
+            uint8_t over_play = (cursor_x >= 70 && cursor_x <= 170 &&
+                                cursor_y >= 218 && cursor_y <= 236);
+            if (current_input.btn3_pressed && over_play) {
+                phase = PHASE_PLAYING;
+                game_started = 1;
+            }
+
+            LCD_Refresh(&cfg0);
+            uint32_t frame_time = HAL_GetTick() - frame_start;
+            if (frame_time < GAME2_FRAME_TIME_MS) HAL_Delay(GAME2_FRAME_TIME_MS - frame_time);
+            continue;
         }
 
         // Dead screen overlay w restart button

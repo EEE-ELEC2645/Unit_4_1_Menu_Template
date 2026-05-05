@@ -27,6 +27,11 @@ typedef enum {
     EVENT_DEAD        // all bars hit 0
 } CatEvent;
 
+typedef enum {
+    PHASE_INSTRUCTIONS,
+    PHASE_PLAYING
+} GamePhase;
+
 typedef struct {
     CatState state;
     uint8_t  hunger;     // 0–100
