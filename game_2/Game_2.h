@@ -10,8 +10,10 @@ typedef enum {
     STATE_EATING,    // Meat being dragged / fed
     STATE_SLEEPING,  // Night background, energy recharging
     STATE_PLAYING,   // Joystick interaction / petting
-    STATE_UNWELL,    // One or more stats hit zero
-    STATE_HAPPY      // All stats full, plays happy tone
+    STATE_UNWELL,    // One or more stats are below 20%
+    STATE_HAPPY,      // All stats full, plays happy tone
+    STATE_DYING,   // all bars at 0, 5 second grace period
+    STATE_DEAD     // gravestone, game over
 } CatState;
 
 typedef enum {
@@ -19,9 +21,10 @@ typedef enum {
     EVENT_BTN_FEED,      // Feed button pressed
     EVENT_BTN_SLEEP,     // Sleep button pressed
     EVENT_JOYSTICK,      // Joystick moved (petting)
-    EVENT_STAT_EMPTY,    // Any stat hits 0
+    EVENT_STAT_EMPTY,    // Any stat hits 20
     EVENT_STAT_FULL,     // All stats full
-    EVENT_ACTION_DONE    // Eating/sleeping animation finished
+    EVENT_ACTION_DONE,    // Eating/sleeping animation finished
+    EVENT_DEAD        // all bars hit 0
 } CatEvent;
 
 typedef struct {
@@ -30,6 +33,7 @@ typedef struct {
     uint8_t  happiness;  // 0–100
     uint8_t  energy;     // 0–100
     uint32_t state_timer; // HAL_GetTick() timestamp of last state entry
+    uint32_t dying_timer;  // tracks 5 second grace period
 } Archie_t;
 
 typedef struct {

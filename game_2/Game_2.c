@@ -13,10 +13,6 @@ extern Joystick_t joystick_data; // for reading joystick input
 
 //@brief Game 2 Implementation - Student can modify
 
-// Game variables - customize for your game
-static int player_x = 0;
-static int player_y = 0;
-
 // Frame rate for this game (in milliseconds)
 #define GAME2_FRAME_TIME_MS 30
 
@@ -27,12 +23,6 @@ static int player_y = 0;
 // This is so bars dont exceed 100 or go below 0, and to make code cleaner in FSM_Update
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
-
-/* Game Initialisation */
-void Game2_Init(void) {
-    player_x = 0;
-    player_y = 0;
-}
 
 // FSM functions
 void FSM_Init(Archie_t *cat) {
@@ -47,7 +37,11 @@ void FSM_Update(Archie_t *cat, CatEvent event) {
     switch (cat->state) {
 
         case STATE_IDLE:
-            if (event == EVENT_STAT_EMPTY)       { cat->state = STATE_UNWELL;   }
+            if (event == EVENT_DEAD){ 
+                cat->dying_timer = HAL_GetTick();
+                cat->state = STATE_DYING;        
+            }
+            else if (event == EVENT_STAT_EMPTY)       { cat->state = STATE_UNWELL;   }
             else if (event == EVENT_BTN_FEED)    { cat->state = STATE_EATING;   }
             else if (event == EVENT_BTN_SLEEP)   { cat->state = STATE_SLEEPING; }
             else if (event == EVENT_JOYSTICK)    { cat->state = STATE_PLAYING;  }
@@ -65,7 +59,11 @@ void FSM_Update(Archie_t *cat, CatEvent event) {
             if (event != EVENT_JOYSTICK) { cat->state = STATE_IDLE; }
             break;
         case STATE_UNWELL:
-            if (event == EVENT_BTN_FEED)        { cat->state = STATE_EATING;   }
+            if (event == EVENT_DEAD)            { 
+                cat->dying_timer = HAL_GetTick();
+                cat->state = STATE_DYING;       
+            }
+            else if (event == EVENT_BTN_FEED)   { cat->state = STATE_EATING;   }
             else if (event == EVENT_BTN_SLEEP)  { cat->state = STATE_SLEEPING; }
             else if (event == EVENT_JOYSTICK)   { cat->state = STATE_PLAYING;  }
             break;
@@ -78,7 +76,30 @@ void FSM_Update(Archie_t *cat, CatEvent event) {
             if (event == EVENT_BTN_SLEEP)    { cat->state = STATE_SLEEPING; }
             if (event == EVENT_JOYSTICK)     { cat->state = STATE_PLAYING;  }
             break; 
+        case STATE_DYING:
+            // Saved by player interaction
+            if (event == EVENT_BTN_FEED) {
+                cat->hunger    = MIN(cat->hunger    + 20, 100);
+                cat->happiness = MIN(cat->happiness + 10, 100);
+                cat->state = STATE_UNWELL;
+            } else if (event == EVENT_BTN_SLEEP) {
+                cat->energy    = MIN(cat->energy    + 20, 100);
+                cat->happiness = MIN(cat->happiness + 10, 100);
+                cat->state = STATE_UNWELL;
+            } else if (event == EVENT_JOYSTICK) {
+                cat->happiness = MIN(cat->happiness + 30, 100);
+                cat->state = STATE_UNWELL;
+            }
+            // 5 second grace period expired
+            if (HAL_GetTick() - cat->dying_timer > 5000) {
+                cat->state = STATE_DEAD;
+            }
+            break;
+        case STATE_DEAD:
+            // nothing — handled in game loop render/restart
+            break;
     }
+
     // only reset timer when state actually changes
     static CatState prev_state = STATE_IDLE;
     if (cat->state != prev_state) {
@@ -121,6 +142,8 @@ MenuState Game2_Run(void) {
     int8_t carried_index = -1;
     uint32_t fish_respawn_timer = HAL_GetTick();
     uint8_t fish_respawn_pending = 0;
+    uint32_t blink_timer = HAL_GetTick();
+    uint8_t blink_visible = 1;
 
     // mapping archie, cursor, bin
     float cursor_x = 120.0f;  // start cursor in centre of screen
@@ -167,14 +190,15 @@ MenuState Game2_Run(void) {
         if (cursor_y < 2)   cursor_y = 2;
         if (cursor_y > 238) cursor_y = 238;
 
+        // Check if cursor is over Archie or bin for interaction
+		uint8_t over_archie = (cursor_x >= ARCHIE_X && cursor_x <= ARCHIE_X + ARCHIE_W && cursor_y >= ARCHIE_Y && cursor_y <= ARCHIE_Y + ARCHIE_H);
+		uint8_t over_bin = (cursor_x >= BIN_X && cursor_x <= BIN_X + BIN_W && cursor_y >= BIN_Y && cursor_y <= BIN_Y + BIN_H);
+
         // Check if cursor actually moved this frame
         uint8_t cursor_moved = ((int16_t)cursor_x != (int16_t)prev_cursor_x || (int16_t)cursor_y != (int16_t)prev_cursor_y);
         // Update previous position
         prev_cursor_x = cursor_x;
         prev_cursor_y = cursor_y;
-
-        // Check if cursor is hovering over Archie
-        uint8_t hovering = (cursor_x >= ARCHIE_X && cursor_x <= ARCHIE_X + ARCHIE_W && cursor_y >= ARCHIE_Y && cursor_y <= ARCHIE_Y + ARCHIE_H);
 
         // Check if cursor is over menu button
         uint8_t over_menu = (cursor_x >= 3 && cursor_x <= 54 && cursor_y >= 8 && cursor_y <= 25);
@@ -220,26 +244,24 @@ MenuState Game2_Run(void) {
 			items[carried_index].y = cursor_y;
 		}
 
-        // Check if cursor is over Archie or bin for interaction
-		uint8_t over_archie = (cursor_x >= ARCHIE_X && cursor_x <= ARCHIE_X + ARCHIE_W && cursor_y >= ARCHIE_Y && cursor_y <= ARCHIE_Y + ARCHIE_H);
-		uint8_t over_bin = (cursor_x >= BIN_X && cursor_x <= BIN_X + BIN_W && cursor_y >= BIN_Y && cursor_y <= BIN_Y + BIN_H);
-
         // stat bars decay every 3 seconds
         if (HAL_GetTick() - last_decay > 3000) {
-            archie.hunger    = MAX(archie.hunger    - 2, 0);
-            archie.happiness = MAX(archie.happiness - 1, 0);
-            archie.energy    = MAX(archie.energy    - 1, 0);
+            archie.hunger    = MAX(archie.hunger    - 5, 0);
+            archie.happiness = MAX(archie.happiness - 5, 0);
+            archie.energy    = MAX(archie.energy    - 5, 0);
             last_decay = HAL_GetTick();
         }
 
         // Check stat thresholds every frame
-        if (archie.hunger <= 20 || archie.happiness <= 20 || archie.energy <= 20)
+        if (archie.hunger == 0 && archie.happiness == 0 && archie.energy == 0)
+            event = EVENT_DEAD;
+        else if (archie.hunger <= 20 || archie.happiness <= 20 || archie.energy <= 20)
             event = EVENT_STAT_EMPTY;
         else if (archie.hunger >= 90 && archie.happiness >= 90 && archie.energy >= 90)
             event = EVENT_STAT_FULL;
 
         // overwrite threshold events so interactions always take priority
-        if (hovering && cursor_moved)    event = EVENT_JOYSTICK;
+        if (over_archie && cursor_moved)    event = EVENT_JOYSTICK;
         if (current_input.btn2_pressed)  event = EVENT_BTN_SLEEP;
 
         // Handle button press for picking up / dropping items
@@ -306,15 +328,80 @@ MenuState Game2_Run(void) {
             case STATE_PLAYING:  LCD_printString("Archie: playing",  40, 100, 1, 2); break;
             case STATE_UNWELL:   LCD_printString("Archie: unwell",   40, 100, 1, 2); break;
             case STATE_HAPPY:    LCD_printString("Archie: happy!",   40, 100, 1, 2); break;
+            case STATE_DYING:   LCD_printString("Archie: dying:(",   40, 100, 1, 2); break;
+            case STATE_DEAD:    LCD_printString("Archie: dead...",   40, 100, 1, 2); break;
+        }
+
+        // Blink effect for dying state
+        if (archie.state == STATE_DYING) {
+            if (HAL_GetTick() - blink_timer > 500) {
+                blink_visible = !blink_visible;
+                blink_timer = HAL_GetTick();
+           }
+        } else {
+            blink_visible = 1;  // always visible in non-dying states   
+        }
+
+        // Dead screen overlay w restart button
+        if (archie.state == STATE_DEAD) {
+            // Dark overlay
+            LCD_Fill_Buffer(0);
+            LCD_printString("Archie has", 60, 30, 2, 2);
+            LCD_printString("passed away...", 30, 55, 2, 2);
+
+            // Archie placeholder (gravestone - grey rectangle for now)
+            LCD_Draw_Rect(ARCHIE_X, ARCHIE_Y, ARCHIE_W, ARCHIE_H, 13, 1);  // grey filled
+            LCD_printString("RIP", ARCHIE_X + 18, ARCHIE_Y + 22, 0, 2);
+
+            // Play Again button
+            LCD_Draw_Rect(70, 185, 100, 20, 4, 1);  // blue filled
+            LCD_printString("Play Again?", 75, 190, 1, 2);
+
+            // Cursor
+            LCD_Draw_Rect((uint16_t)cursor_x - 2, (uint16_t)cursor_y - 2, 5, 5, 1, 1);
+
+            // Check if cursor over Play Again button and btn3 pressed
+            uint8_t over_restart = (cursor_x >= 70 && cursor_x <= 170 && cursor_y >= 185 && cursor_y <= 205);
+            if (current_input.btn3_pressed && over_restart) {
+                // Reset everything
+                FSM_Init(&archie);
+                for (int i = 0; i < MAX_ITEMS; i++) {
+                    items[i].active = 0;
+                    items[i].type = ITEM_NONE;
+                }
+                items[0].x = 20; items[0].y = 150;
+                items[0].type = ITEM_FISH; items[0].active = 1;
+                carried_index = -1;
+                fish_respawn_pending = 0;
+                cursor_x = 120.0f;
+                cursor_y = 120.0f;
+            }
+
+            LCD_Refresh(&cfg0);
+            // Skip rest of render
+            uint32_t frame_time = HAL_GetTick() - frame_start;
+            if (frame_time < GAME2_FRAME_TIME_MS) HAL_Delay(GAME2_FRAME_TIME_MS - frame_time);
+            continue;
         }
 
         // Stat bars
         LCD_printString("Hunger:", 10, 40, 1, 1);
-        Draw_Stat_Bar(70, 40, archie.hunger,    5);  // colour 5 = orange
+        if (archie.state == STATE_DYING && !blink_visible) 
+            Draw_Stat_Bar(70, 40, 100,    2);  // flash red when dying
+        else 
+            Draw_Stat_Bar(70, 40, archie.hunger,    5); 
+
         LCD_printString("Happiness:", 10, 55, 1, 1);
-        Draw_Stat_Bar(70, 55, archie.happiness, 3);  // colour 3 = green
+        if (archie.state == STATE_DYING && !blink_visible) 
+            Draw_Stat_Bar(70, 55, 100, 2);
+        else 
+            Draw_Stat_Bar(70, 55, archie.happiness, 3);
+
         LCD_printString("Energy:", 10, 70, 1, 1);
-        Draw_Stat_Bar(70, 70, archie.energy,    4);  // colour 4 = blue
+        if (archie.state == STATE_DYING && !blink_visible) 
+            Draw_Stat_Bar(70, 70, 100,    2);
+        else 
+            Draw_Stat_Bar(70, 70, archie.energy,    4);
 
         // Draw bin (always visible)
         LCD_Draw_Rect(BIN_X, BIN_Y, BIN_W, BIN_H, 5, 0);  // orange outline
