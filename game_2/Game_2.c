@@ -5,6 +5,7 @@
 #include "Buzzer.h"
 #include "stm32l4xx_hal.h"
 #include <stdio.h>
+#include "Archie_Sprites.h"
 
 extern ST7789V2_cfg_t cfg0;
 extern Buzzer_cfg_t buzzer_cfg;  // Buzzer control
@@ -147,6 +148,7 @@ MenuState Game2_Run(void) {
     uint8_t fish_respawn_pending = 0;
     uint32_t blink_timer = HAL_GetTick();
     uint8_t blink_visible = 1;
+    uint8_t sleep_start_energy = 80;  // set when sleep begins
 
     // mapping archie, cursor, bin
     float cursor_x = 120.0f;  // start cursor in centre of screen
@@ -156,14 +158,14 @@ MenuState Game2_Run(void) {
     #define CURSOR_SPEED 5.0f
     #define ARCHIE_X 70
     #define ARCHIE_Y 100
-    #define ARCHIE_W 60
-    #define ARCHIE_H 60
-    #define FISH_W 20
-    #define FISH_H 15
+    #define ARCHIE_W 128
+    #define ARCHIE_H 128
+    #define FISH_W 64
+    #define FISH_H 64
     #define BIN_X 180
     #define BIN_Y 150
-    #define BIN_W 25
-    #define BIN_H 25
+    #define BIN_W 96
+    #define BIN_H 96
 
     // Play a brief startup sound
     buzzer_tone(&buzzer_cfg, 1200, 30);  // 1.2kHz at 30% volume
@@ -193,8 +195,23 @@ MenuState Game2_Run(void) {
         if (cursor_y < 2)   cursor_y = 2;
         if (cursor_y > 238) cursor_y = 238;
 
-        // Check if cursor is over Archie or bin for interaction
-        uint8_t over_archie = (cursor_x >= ARCHIE_X && cursor_x <= ARCHIE_X + ARCHIE_W && cursor_y >= ARCHIE_Y && cursor_y <= ARCHIE_Y + ARCHIE_H);
+        // hover check, not including transparent pixels of sprite
+        const uint8_t* current_sprite = archie_idle;
+        if (archie.state == STATE_PLAYING)  current_sprite = archie_playing;
+        if (archie.state == STATE_UNWELL)   current_sprite = archie_unwell;
+        if (archie.state == STATE_HAPPY)    current_sprite = archie_happy;
+
+        uint8_t over_archie = 0;
+        if (cursor_x >= ARCHIE_X && cursor_x <= ARCHIE_X + ARCHIE_SPRITE_W * 4 && cursor_y >= ARCHIE_Y && cursor_y <= ARCHIE_Y + ARCHIE_SPRITE_H * 4) {
+            int sprite_px = ((int)cursor_x - ARCHIE_X) / 4;
+            int sprite_py = ((int)cursor_y - ARCHIE_Y) / 4;
+            if (sprite_px >= 0 && sprite_px < 32 && sprite_py >= 0 && sprite_py < 32) {
+                uint8_t pixel = current_sprite[sprite_py * 32 + sprite_px];
+                over_archie = (pixel != 255);
+            }
+        }
+
+        // Check if cursor is over bin for interaction
         uint8_t over_bin = (cursor_x >= BIN_X && cursor_x <= BIN_X + BIN_W && cursor_y >= BIN_Y && cursor_y <= BIN_Y + BIN_H);
 
         // Check if cursor actually moved this frame
@@ -318,6 +335,13 @@ MenuState Game2_Run(void) {
             }
 
             FSM_Update(&archie, event);
+
+            // Capture energy at moment sleep begins
+            static CatState prev_state_render = STATE_IDLE;
+            if (archie.state == STATE_SLEEPING && prev_state_render != STATE_SLEEPING) {
+                sleep_start_energy = archie.energy;
+            }
+            prev_state_render = archie.state;
         }
 
 
@@ -337,19 +361,46 @@ MenuState Game2_Run(void) {
         LCD_Draw_Rect(186, 8, 51, 17, 4, 1);  // blue filled
         LCD_printString("INFO", 190, 10, 1, 2);
 
-        LCD_Draw_Rect(ARCHIE_X, ARCHIE_Y, ARCHIE_W, ARCHIE_H, 1, 0); // for testing archie position, replace with sprite later
-
         // TODO: replace with sprite draw calls
         switch (archie.state) {
-            case STATE_IDLE:     LCD_printString("Archie: idle",     40, 100, 1, 2); break;
-            case STATE_EATING:   LCD_printString("Archie: eating",   40, 100, 1, 2); break;
-            case STATE_SLEEPING: LCD_printString("Archie: sleeping", 40, 100, 1, 2); break;
-            case STATE_PLAYING:  LCD_printString("Archie: playing",  40, 100, 1, 2); break;
-            case STATE_UNWELL:   LCD_printString("Archie: unwell",   40, 100, 1, 2); break;
-            case STATE_HAPPY:    LCD_printString("Archie: happy!",   40, 100, 1, 2); break;
-            case STATE_DYING:   LCD_printString("Archie: dying:(",   40, 100, 1, 2); break;
-            case STATE_DEAD:    LCD_printString("Archie: dead...",   40, 100, 1, 2); break;
-        }
+            case STATE_IDLE:
+                LCD_Draw_Sprite_Scaled(ARCHIE_X, ARCHIE_Y, ARCHIE_SPRITE_H, ARCHIE_SPRITE_W, archie_idle, 4);
+                break;
+            case STATE_EATING: {
+                uint8_t eating_frame = ((HAL_GetTick() - archie.state_timer) / 250) % 2;
+                if (eating_frame == 0)
+                    LCD_Draw_Sprite_Scaled(ARCHIE_X, ARCHIE_Y, ARCHIE_SPRITE_H, ARCHIE_SPRITE_W, archie_eating_open, 4);
+                else
+                    LCD_Draw_Sprite_Scaled(ARCHIE_X, ARCHIE_Y, ARCHIE_SPRITE_H, ARCHIE_SPRITE_W, archie_eating_closed, 4);
+                break;
+            }
+            case STATE_SLEEPING: {
+                uint8_t energy_gained = archie.energy - sleep_start_energy;
+                uint8_t energy_range  = 100 - sleep_start_energy;
+                if (energy_range == 0) energy_range = 1;  // avoid divide by zero
+                uint8_t frame = (energy_gained * 4) / energy_range;
+                if (frame > 3) frame = 3;
+                LCD_Draw_Sprite_Scaled(ARCHIE_X, ARCHIE_Y, ARCHIE_SPRITE_H, ARCHIE_SPRITE_W, archie_sleeping[frame], 4);
+                break;
+            }
+            case STATE_PLAYING: 
+                LCD_Draw_Sprite_Scaled(ARCHIE_X, ARCHIE_Y, ARCHIE_SPRITE_H, ARCHIE_SPRITE_W, archie_playing, 4);
+                break;
+            case STATE_UNWELL:
+                LCD_Draw_Sprite_Scaled(ARCHIE_X, ARCHIE_Y, ARCHIE_SPRITE_H, ARCHIE_SPRITE_W, archie_unwell, 4);
+                break;
+            case STATE_HAPPY:
+                LCD_Draw_Sprite_Scaled(ARCHIE_X, ARCHIE_Y, ARCHIE_SPRITE_H, ARCHIE_SPRITE_W, archie_happy, 4);
+                break;
+            case STATE_DYING:
+                if (blink_visible) {
+                    LCD_Draw_Sprite_Scaled(ARCHIE_X, ARCHIE_Y, ARCHIE_SPRITE_H, ARCHIE_SPRITE_W, archie_unwell, 4);
+                }
+                break;
+            case STATE_DEAD:
+                LCD_Draw_Sprite_Scaled(ARCHIE_X, ARCHIE_Y, ARCHIE_SPRITE_H, ARCHIE_SPRITE_W, archie_grave, 4);
+                break;
+            }
 
         // Blink effect for dying state
         if (archie.state == STATE_DYING) {
@@ -382,7 +433,7 @@ MenuState Game2_Run(void) {
             LCD_printString("Press btn2 to sleep", 10, 155, 1, 1);
             LCD_printString("Beware! If Archie's stats", 10, 172, 1, 1);
             LCD_printString("get too low, there will", 10, 185, 1, 1);
-            LCD_printString("be consequences...", 10, 198, 1, 1);
+            LCD_printString("be consequences...", 10, 198, 2, 1);
 
             // Play / Resume button
             LCD_Draw_Rect(70, 218, 100, 23, 3, 1);
@@ -396,16 +447,14 @@ MenuState Game2_Run(void) {
             LCD_Draw_Rect((uint16_t)cursor_x - 2, (uint16_t)cursor_y - 2, 5, 5, 1, 1);
 
             // Menu button check
-            uint8_t over_menu_inst = (cursor_x >= 3 && cursor_x <= 54 &&
-                                    cursor_y >= 8 && cursor_y <= 25);
+            uint8_t over_menu_inst = (cursor_x >= 3 && cursor_x <= 54 && cursor_y >= 8 && cursor_y <= 25);
             if (current_input.btn3_pressed && over_menu_inst) {
                 exit_state = MENU_STATE_HOME;
                 break;
             }
 
             // Play/Resume button check
-            uint8_t over_play = (cursor_x >= 70 && cursor_x <= 170 &&
-                                cursor_y >= 218 && cursor_y <= 236);
+            uint8_t over_play = (cursor_x >= 70 && cursor_x <= 170 && cursor_y >= 218 && cursor_y <= 236);
             if (current_input.btn3_pressed && over_play) {
                 phase = PHASE_PLAYING;
                 game_started = 1;
@@ -424,9 +473,8 @@ MenuState Game2_Run(void) {
             LCD_printString("Archie has", 60, 30, 2, 2);
             LCD_printString("passed away...", 30, 55, 2, 2);
 
-            // Archie placeholder (gravestone - grey rectangle for now)
-            LCD_Draw_Rect(ARCHIE_X, ARCHIE_Y, ARCHIE_W, ARCHIE_H, 13, 1);  // grey filled
-            LCD_printString("RIP", ARCHIE_X + 18, ARCHIE_Y + 22, 0, 2);
+            // Grave sprite
+            LCD_Draw_Sprite_Scaled(ARCHIE_X, ARCHIE_Y, ARCHIE_SPRITE_H, ARCHIE_SPRITE_W, archie_grave, 4);
 
             // Play Again button
             LCD_Draw_Rect(70, 185, 100, 20, 4, 1);  // blue filled
@@ -479,14 +527,18 @@ MenuState Game2_Run(void) {
             Draw_Stat_Bar(70, 70, archie.energy,    4);
 
         // Draw bin (always visible)
-        LCD_Draw_Rect(BIN_X, BIN_Y, BIN_W, BIN_H, 5, 0);  // orange outline
-        LCD_printString("BIN", BIN_X + 3, BIN_Y + 8, 5, 1);
+        if (carried_index >= 0 && over_bin)
+            LCD_Draw_Sprite_Scaled(BIN_X, BIN_Y, 32, 32, open_bin, 3);
+        else
+            LCD_Draw_Sprite_Scaled(BIN_X, BIN_Y, 32, 32, closed_bin, 3);
 
         // Draw food items
         for (int i = 0; i < MAX_ITEMS; i++) {
             if (items[i].active) {
-                uint8_t colour = (items[i].type == ITEM_FISH) ? 2 : 4;  // red=fish, blue=bones
-                LCD_Draw_Rect((uint16_t)items[i].x, (uint16_t)items[i].y, FISH_W, FISH_H, colour, 1);
+                if (items[i].type == ITEM_FISH)
+                    LCD_Draw_Sprite_Scaled((uint16_t)items[i].x, (uint16_t)items[i].y, 32, 32, fish, 2);
+                else
+                    LCD_Draw_Sprite_Scaled((uint16_t)items[i].x, (uint16_t)items[i].y, 32, 32, bones, 2);
             }
         }
 
@@ -498,6 +550,6 @@ MenuState Game2_Run(void) {
             HAL_Delay(GAME2_FRAME_TIME_MS - frame_time);
         }
     }
-    
+
     return exit_state;  // Tell main where to go next
 }
