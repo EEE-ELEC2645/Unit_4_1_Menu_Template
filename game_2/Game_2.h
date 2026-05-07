@@ -6,24 +6,24 @@
 // @brief Game 2 - Student can implement their own game here
 
 typedef enum {
-    STATE_IDLE,      // All stats okay, default animation
-    STATE_EATING,    // Meat being dragged / fed
-    STATE_SLEEPING,  // Night background, energy recharging
-    STATE_PLAYING,   // Joystick interaction / petting
-    STATE_UNWELL,    // One or more stats are below 20%
-    STATE_HAPPY,      // All stats full, plays happy tone
-    STATE_DYING,   // all bars at 0, 5 second grace period
-    STATE_DEAD     // gravestone, game over
+    STATE_IDLE, // default animation
+    STATE_EATING, // fed
+    STATE_SLEEPING, // energy recharging
+    STATE_PLAYING, // joystick interaction (petting)
+    STATE_UNWELL, // one or more stats below 20%
+    STATE_HAPPY, // all stats above 90%
+    STATE_DYING, // all bars 0, 5 second grace period
+    STATE_DEAD  // gravestone,
 } CatState;
 
 typedef enum {
     EVENT_NONE,
-    EVENT_BTN_FEED,      // Feed button pressed
-    EVENT_BTN_SLEEP,     // Sleep button pressed
-    EVENT_JOYSTICK,      // Joystick moved (petting)
-    EVENT_STAT_EMPTY,    // Any stat hits 20
-    EVENT_STAT_FULL,     // All stats full
-    EVENT_ACTION_DONE,    // Eating/sleeping animation finished
+    EVENT_BTN_FEED, // feed button pressed
+    EVENT_BTN_SLEEP, // sleep button pressed
+    EVENT_JOYSTICK,  // joystick moved (petting)
+    EVENT_STAT_EMPTY, // one or more stats below 20%
+    EVENT_STAT_FULL,   // all stats above 90%
+    EVENT_ACTION_DONE, // eating/sleeping animation finished
     EVENT_DEAD        // all bars hit 0
 } CatEvent;
 
@@ -34,18 +34,18 @@ typedef enum {
 
 typedef struct {
     CatState state;
-    uint8_t  hunger;     // 0–100
-    uint8_t  happiness;  // 0–100
-    uint8_t  energy;     // 0–100
+    uint8_t  hunger; 
+    uint8_t  happiness; 
+    uint8_t  energy;
     uint32_t state_timer; // HAL_GetTick() timestamp of last state entry
     uint32_t dying_timer;  // tracks 5 second grace period
 } Archie_t;
 
 typedef struct {
     float x, y;
-    uint8_t type;         // ITEM_NONE, ITEM_FISH, ITEM_BONES
-    uint8_t active;       // 1 = on screen
-    uint32_t spawn_time;  // for delayed appearance (bones after eating)
+    uint8_t type; // ITEM_NONE, ITEM_FISH, ITEM_BONES
+    uint8_t active; // 1 = on screen
+    uint32_t spawn_time; // for delayed appearance (bones after eating)
 } FoodItem_t;
 
 #define ITEM_NONE  0
